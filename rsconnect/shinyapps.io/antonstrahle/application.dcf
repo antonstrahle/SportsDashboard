@@ -1,0 +1,10 @@
+name: application
+title:
+username:
+account: antonstrahle
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 3723182
+bundleId: 4292818
+url: https://antonstrahle.shinyapps.io/application/
+when: 1614730111.2721

@@ -4,16 +4,27 @@ library(kableExtra)
 library(tidyverse)
 library(plotly)
 library(RColorBrewer)
-
+library(googlesheets4)
+library(mailR)
 
 function(input, output, session) {
   
+  options(gargle_oauth_cache = ".secrets")
+  sheets_auth(
+    cache = ".secrets",
+    email = "squashdashboard@gmail.com"
+  )
+  
   #Static data for ease
-  users <- read.csv2("data/users.csv", header = T, sep = ";", fileEncoding="UTF-8-BOM")
-  matches <- read.csv2("data/matches.csv", header = T, sep = ";", fileEncoding="UTF-8-BOM")
-  players <- read.csv2("data/players.csv", header = T, sep = ";", fileEncoding="UTF-8-BOM")
-  leagues <- read.csv2("data/leagues.csv", header = T, sep = ";", fileEncoding="UTF-8-BOM") %>% 
-    mutate(Active = ifelse(Sys.Date() > startDate & Sys.Date() < endDate, T, F)) 
+  users <- read_sheet("https://docs.google.com/spreadsheets/d/1eBioS9iA0sZlCMBow5Lxs0swwLIrhyZh-AfZEC4r4Ow/edit#gid=0",
+                      col_types = "iccli")
+  matches <- read_sheet("https://docs.google.com/spreadsheets/d/1rCrzmAQLJmh_f1WGfnXPGIIUsTVHKDDsCf71djgp030/edit#gid=0",
+                        col_types = "ciiDii")
+  players <- read_sheet("https://docs.google.com/spreadsheets/d/1d647e0-sp6ooAJpSNd1ghBCHZURlv_EBp2hKfXNPFdY/edit#gid=0",
+                        col_types = "icDc")
+  leagues <- read_sheet("https://docs.google.com/spreadsheets/d/1LqICuQFZDDccy2oNUXSJ9-d71gXp4cATpKNs4pzyUsY/edit#gid=0",
+                        col_types = "cDDl") %>% 
+    mutate(active = ifelse(Sys.Date() > startDate & Sys.Date() < endDate, T, F)) 
   
   #Login
   login.page = paste(
@@ -43,14 +54,14 @@ function(input, output, session) {
               USER$Logged <- T
               USER$Id <- users %>% 
                 filter(userId == Id.username) %>% 
-                pull(playerId)
+                pull(userId)
               
               USER$Admin <- users %>% 
                 filter(userId == Id.username) %>% 
                 pull(admin)
               
               USER$Name <- players %>% 
-                filter(playerId == isolate(USER$Id)) %>% 
+                filter(userId == isolate(USER$Id)) %>% 
                 pull(name)
               
             }
@@ -74,14 +85,14 @@ function(input, output, session) {
   data$players <- players
   
   data$uniqueIds <- players %>% 
-    pull(playerId)
+    pull(userId)
   
   data$leagues <- leagues
   
   data$users <- users
   
   activeLeagues <- leagues %>% 
-    filter(Active) %>% 
+    filter(active) %>% 
     pull(league)
   
   #For backup (reactive for all?)
@@ -98,8 +109,8 @@ function(input, output, session) {
   output$standings <- renderText({
     
     temp <- data$matches %>% 
-      filter(league == input$league & correct) %>% 
-      mutate(playerId = as.numeric(playerId))
+      filter(league == input$league) %>% 
+      mutate(userId = as.numeric(userId))
     
     if(nrow(temp) > 0){
       
@@ -111,15 +122,15 @@ function(input, output, session) {
         mutate(point = ifelse(score > mean(score), 3,
                               ifelse(score == mean(score), 1, 0))) %>% 
         ungroup() %>% 
-        group_by(playerId) %>% 
+        group_by(userId) %>% 
         summarise(points = sum(point),
                   wins = sum(point == 3),
                   ties = sum(point == 1),
                   losses = sum(point == 0),
                   gamesWon = sum(score)) %>% 
         inner_join(data$players %>% 
-                     mutate(playerId = as.numeric(playerId)), by = "playerId") %>% 
-        arrange(desc(points)) %>% 
+                     mutate(userId = as.numeric(userId)), by = "userId") %>% 
+        arrange(desc(points, gamesWon)) %>% 
         mutate(rank = row_number()) %>% 
         select(rank, name, wins, ties, losses, gamesWon, points) %>% 
         setNames(c("Rank", "Name", "Match Wins", "Match Ties", "Match Losses", "Games Won", "Total Points")) %>% 
@@ -143,14 +154,14 @@ function(input, output, session) {
   output$recentMatches <- renderText({
     
     temp <- data$matches %>% 
-      filter(league == input$league & correct) %>% 
-      mutate(playerId = as.numeric(playerId))
+      filter(league == input$league) %>% 
+      mutate(userId = as.numeric(userId))
     
     if(nrow(temp) > 0){
       
       temp %>%  
         inner_join(data$players %>% 
-                     mutate(as.numeric(playerId)), by = "playerId") %>% 
+                     mutate(as.numeric(userId)), by = "userId") %>% 
         group_by(matchId) %>% 
         mutate(totScore = paste(score, collapse = "-"),
                   names = paste(name, collapse = ", "),
@@ -195,10 +206,10 @@ function(input, output, session) {
     req(input$scorePlayer)
     req(input$scoreOpponent)
     
-    data.frame("playerId" = c(USER$Id, input$opponent), 
+    data.frame("userId" = c(USER$Id, input$opponent), 
                "score" = c(input$scorePlayer, input$scoreOpponent)) %>% 
-      mutate(playerId = as.numeric(playerId)) %>% 
-      inner_join(data$players, by = "playerId") %>% 
+      mutate(userId = as.numeric(userId)) %>% 
+      inner_join(data$players, by = "userId") %>% 
       mutate(totScore = paste(score, collapse = "-"),
              names = paste(name, collapse = ", "),
              date = input$matchDate) %>% 
@@ -220,21 +231,20 @@ function(input, output, session) {
     req(input$scoreOpponent)
     
     curMatchesInLeague <- data$matches %>% 
-      filter(league == input$league & correct) %>% 
+      filter(league == input$league) %>% 
       arrange(desc(matchId))
     
     newId <- ifelse(nrow(curMatchesInLeague) != 0, max(curMatchesInLeague$matchId) + 1, 1)
     
-    temp <- data.frame("playerId" = c(USER$Id, input$opponent), 
+    temp <- data.frame("userId" = c(USER$Id, input$opponent), 
                        "score" = c(input$scorePlayer, input$scoreOpponent)) %>% 
       mutate(date = input$matchDate,
              matchId = newId,
              loggedByPlayer = USER$Id, 
-             league = input$league,
-             correct = T) %>% 
-      select(league, matchId, playerId, date, score, loggedByPlayer, correct)
+             league = input$league) %>% 
+      select(league, matchId, userId, date, score, loggedByPlayer)
     
-    write.table(temp, "data/matches.csv", sep = ";", append = T, col.names = F, row.names = F, fileEncoding="UTF-8")
+    sheet_append("https://docs.google.com/spreadsheets/d/1rCrzmAQLJmh_f1WGfnXPGIIUsTVHKDDsCf71djgp030/edit#gid=0", temp)
     
     #Update rval
     data$matches = data$matches %>% 
@@ -254,7 +264,7 @@ function(input, output, session) {
   output$pMaps <- renderText({
     
     data$players %>% 
-      select(playerId, name) %>% 
+      select(userId, name) %>% 
       setNames(c("Player ID", "Player Name")) %>% 
       kable(caption = "Player Ids") %>% 
       kable_styling(font_size = 15, bootstrap_options = c("striped", "hover", "condensed")) 
@@ -272,7 +282,7 @@ function(input, output, session) {
     
       clean <- raw %>% 
         group_by(matchId) %>% 
-        mutate(opponentId = ifelse(playerId == max(playerId), min(playerId), max(playerId)),
+        mutate(opponentId = ifelse(userId == max(userId), min(userId), max(userId)),
                outcome = factor(ifelse(score > mean(score), "Win",
                                        ifelse(score == mean(score), "Tie", "Loss"))),
                opponentScore = ifelse(score > mean(score), min(score),
@@ -280,7 +290,7 @@ function(input, output, session) {
                date = as.Date(date),
                month = format(date, "%Y-%m")) %>% 
         ungroup() %>% 
-        filter(playerId == USER$Id)
+        filter(userId == USER$Id)
       
       if(nrow(clean) > 0){
           
@@ -288,13 +298,13 @@ function(input, output, session) {
         output$wtlPlot <- renderPlotly({
           
             ggplotly(clean %>% 
-                      group_by(playerId, month, opponentId) %>% 
+                      group_by(userId, month, opponentId) %>% 
                       summarise(games = n(),
                                 Wins = sum(outcome == "Win"),
                                 Ties = sum(outcome == "Tie"),
                                 Losses = sum(outcome == "Loss")) %>% 
-                      gather(key = type, value = count,  -playerId, -month, -games, -opponentId) %>% 
-                      inner_join(data$players, by = c("opponentId" = "playerId")) %>% 
+                      gather(key = type, value = count,  -userId, -month, -games, -opponentId) %>% 
+                      inner_join(data$players, by = c("opponentId" = "userId")) %>% 
                       mutate(type = factor(type, levels = c("Wins", "Ties", "Losses"))) %>% 
                       ggplot() +
                       geom_bar(aes(x = month, y = count, fill = type), position="stack", stat="identity") +
@@ -312,7 +322,7 @@ function(input, output, session) {
         output$wcPlot <- renderPlotly({
           
           ggplotly(clean %>% 
-                     group_by(playerId, month) %>% 
+                     group_by(userId, month) %>% 
                      summarise(propWon = sum(score)/sum(score + opponentScore)) %>% 
                      ggplot(aes(x = month, y = propWon), color = "blue") +
                      geom_point() +
@@ -365,7 +375,7 @@ function(input, output, session) {
       temp <- matches %>% 
         filter(!(league == input$league & matchId == input$idToAlter))
       
-      write.table(temp, "data/matches.csv", sep = ";", append = F, col.names = T, row.names = F, fileEncoding="UTF-8")
+      sheet_write(temp, "https://docs.google.com/spreadsheets/d/1rCrzmAQLJmh_f1WGfnXPGIIUsTVHKDDsCf71djgp030/edit#gid=0", 1)
       
       data$matches = temp
       
@@ -389,13 +399,13 @@ function(input, output, session) {
   
   observeEvent(input$addUsers, {
     
-    newId <- as.numeric(max(max(data$users$userId), max(data$players$playerId))) + 1 #just so that we can chill with user=player id all the time
+    newId <- as.numeric(max(max(data$users$userId), max(data$players$userId))) + 1 #just so that we can chill with user=player id all the time
     
-    newUser <- matrix(c(newId, input$usern, input$pass, newId, input$adm, USER$Id), ncol = 6) %>% 
+    newUser <- matrix(c(newId, input$usern, input$pass, input$adm, USER$Id), ncol = 5) %>% 
       data.frame() %>% 
-      setNames(c("userId", "username", "password", "playerId", "admin", "addedByUser"))
+      setNames(c("userId", "username", "password", "admin", "addedByUser"))
     
-    write.table(newUser, "data/users.csv", sep = ";", append = T, col.names = F, row.names = F, fileEncoding="UTF-8")
+    sheet_append("https://docs.google.com/spreadsheets/d/1eBioS9iA0sZlCMBow5Lxs0swwLIrhyZh-AfZEC4r4Ow/edit#gid=0", newUser)
     
     data$users <- data$users %>% 
       rbind(newUser)
@@ -418,7 +428,7 @@ function(input, output, session) {
       temp <- users %>% 
         filter(userId != input$userToRemove)
       
-      write.table(temp, "data/users.csv", sep = ";", append = F, col.names = T, row.names = F, fileEncoding="UTF-8")
+      write_sheet(temp, "https://docs.google.com/spreadsheets/d/1eBioS9iA0sZlCMBow5Lxs0swwLIrhyZh-AfZEC4r4Ow/edit#gid=0", 1)
       
       data$users <- temp
       
@@ -455,9 +465,9 @@ function(input, output, session) {
   output$userInfo <- renderText({
     
     data$users %>% 
-      mutate(playerId = as.numeric(playerId)) %>% 
+      mutate(userId = as.numeric(userId)) %>% 
       filter(userId == USER$Id) %>% 
-      inner_join(data$players %>% mutate(playerId = as.numeric(playerId)), by = "playerId") %>% 
+      inner_join(data$players %>% mutate(userId = as.numeric(userId)), by = "userId") %>% 
       mutate(password = paste(rep("*", nchar(password)), collapse = "")) %>% 
       kable(caption = "Your Info") %>% 
       kable_styling(font_size = 15, bootstrap_options = c("striped", "hover", "condensed")) 
@@ -467,12 +477,13 @@ function(input, output, session) {
   #Username
   observeEvent(input$changeUsername, {
     
-    userData <- read.csv2("data/users.csv", header = T, sep = ";", fileEncoding="UTF-8-BOM")
+    userData <- read_sheet("https://docs.google.com/spreadsheets/d/1eBioS9iA0sZlCMBow5Lxs0swwLIrhyZh-AfZEC4r4Ow/edit#gid=0",
+                           col_types = "iccli")
     
     temp <- userData %>% 
       mutate(username = ifelse(userId == USER$Id, input$newUsername, username))
     
-    write.table(temp, "data/users.csv", sep = ";", append = F, col.names = T, row.names = F, fileEncoding="UTF-8")
+    sheet_write(temp, "https://docs.google.com/spreadsheets/d/1eBioS9iA0sZlCMBow5Lxs0swwLIrhyZh-AfZEC4r4Ow/edit#gid=0", 1)
     
     data$users <- temp
     
@@ -486,12 +497,13 @@ function(input, output, session) {
   #Name
   observeEvent(input$changeName, {
     
-    playerData <- read.csv2("data/players.csv", header = T, sep = ";", fileEncoding="UTF-8-BOM")
+    playerData <- read_sheet("https://docs.google.com/spreadsheets/d/1d647e0-sp6ooAJpSNd1ghBCHZURlv_EBp2hKfXNPFdY/edit#gid=0",
+                             col_types = "icDc")
     
     temp <- playerData %>% 
-      mutate(name = ifelse(playerId == USER$Id, input$newName, name))
+      mutate(name = ifelse(userId == USER$Id, input$newName, name))
     
-    write.table(temp, "data/players.csv", sep = ";", append = F, col.names = T, row.names = F, fileEncoding="UTF-8")
+    sheet_write(temp, "https://docs.google.com/spreadsheets/d/1d647e0-sp6ooAJpSNd1ghBCHZURlv_EBp2hKfXNPFdY/edit#gid=0", 1)
     
     data$players <- temp
     
@@ -505,7 +517,7 @@ function(input, output, session) {
   #Pass
   observeEvent(input$changePassword, {
     
-    userData <- read.csv2("data/users.csv", header = T, sep = ";", fileEncoding="UTF-8-BOM")
+    userData <- read_sheet("https://docs.google.com/spreadsheets/d/1eBioS9iA0sZlCMBow5Lxs0swwLIrhyZh-AfZEC4r4Ow/edit#gid=0")
     
     currentPass <- userData %>% 
       filter(userId == USER$Id) %>% 
@@ -517,7 +529,7 @@ function(input, output, session) {
         temp <- userData %>% 
           mutate(password = ifelse(userId == isolate(USER$Id), isolate(input$newPassword1), password))
         
-        write.table(temp, "data/users.csv", sep = ";", append = F, col.names = T, row.names = F, fileEncoding="UTF-8")
+        sheet_write(temp, "https://docs.google.com/spreadsheets/d/1eBioS9iA0sZlCMBow5Lxs0swwLIrhyZh-AfZEC4r4Ow/edit#gid=0", 1)
         
         data$users <- temp
         
@@ -530,7 +542,7 @@ function(input, output, session) {
         
         showModal(modalDialog(
           title = "The password could not be changed",
-          paste("The new passwords do no match")
+          paste("The new password does no match")
         ))
         
       } 
@@ -555,15 +567,16 @@ function(input, output, session) {
       
       newPlayer <- matrix(c(USER$Id, input$playerName, format(Sys.Date(), "%Y-%m-%d"), "Active"), ncol = 4) %>% 
         data.frame() %>% 
-        setNames(c("playerId", "name", "lastactive", "status"))
+        setNames(c("userId", "name", "lastactive", "status"))
       
-      write.table(newPlayer, "data/players.csv", sep = ";", append = T, col.names = F, row.names = F, fileEncoding="UTF-8")
+      sheet_append("https://docs.google.com/spreadsheets/d/1d647e0-sp6ooAJpSNd1ghBCHZURlv_EBp2hKfXNPFdY/edit#gid=0", newPlayer)
       
       data$players <- data$players %>% 
         rbind(newPlayer) %>% 
-        mutate(playerId = as.numeric(playerId))
+        mutate(userId = as.numeric(userId))
       
-      data$uniqueIds <- data$players$playerId %>% unique()
+      data$uniqueIds <- data$players$userId %>% 
+        unique()
       
       showModal(modalDialog(
         title = "Player Profile Created",
@@ -595,7 +608,9 @@ function(input, output, session) {
           br(),
           HTML("Unlike the username the name you enter here is showed in rankings, analysis etc."),
           br(),
-          actionButton("createProfile", "Create Profile")
+          actionButton("createProfile", "Create Profile"),
+          br(),
+          HTML("Your password can be changed once logged")
         )
         
       } else {
@@ -648,8 +663,8 @@ function(input, output, session) {
                   h2("Alter Matches"),
                   uiOutput("leagueMatches"),
                   uiOutput("rmId"),
-                  uiOutput("rmButton")
-                  
+                  uiOutput("rmButton"),
+                  HTML("Currently you can only remove and not alter matches :/")
           ),
           #Analysis
           tabItem(tabName = "playerAnalysis",
@@ -681,6 +696,7 @@ function(input, output, session) {
           #Change Info
           tabItem(tabName = "changeInfo",
                   h2("Change User Info"),
+                  HTML(paste("Please dont reuse passwords from other sites as there is no/minimal security in place")),
                   uiOutput("userInfo"),
                   fluidRow(
                     column(4,

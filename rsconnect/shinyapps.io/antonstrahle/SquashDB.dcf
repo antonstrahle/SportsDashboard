@@ -1,0 +1,10 @@
+name: SquashDB
+title: SquashDB
+username:
+account: antonstrahle
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 3802048
+bundleId: 4362655
+url: https://antonstrahle.shinyapps.io/SquashDB/
+when: 1616055401.28486

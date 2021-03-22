@@ -1,0 +1,10 @@
+name: SquashDashboard
+title: Squash Dashboard
+username:
+account: antonstrahle
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 3725026
+bundleId: 4292973
+url: https://antonstrahle.shinyapps.io/SquashDashboard/
+when: 1614733477.58456
